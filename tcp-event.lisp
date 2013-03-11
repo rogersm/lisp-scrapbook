@@ -1,9 +1,11 @@
 (quicklisp:quickload "usocket")
 
-(defvar *master-socket* nil)
-(defvar *sockets* '())
+(defvar *master-socket* nil) ;; main socket listener
+(defvar *sockets* '())       ;; all sockets used by the tcp server, including *master-socket*
 
 (defun tcp-server (host port)
+  "Create a listener at host:port and manage the new connections incoming 
+to *master-socket* as well as data reception from the remaining sockets"
   (setf *master-socket* (usocket:socket-listen host port
 					       :reuse-address t
 					       :element-type 'character))
@@ -20,22 +22,29 @@
 	      (handle-client-input socket)))))
 
 (defun handle-client-connection (socket)
+  "Log the reception of a new client"
   (format t "Accepted incoming connection ~a from ~a:~a~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket)))
 
 (defun handle-client-input (socket)
+  "Read data from incoming socket and return it reversed. If the connection is unwrittable
+close socket and remove socket from *sockets*"
   (let ((stream (usocket:socket-stream socket)))
     (handler-case
-	 (progn
-	   (format stream "~a~%" (reverse (read-line stream)))
-	   (force-output stream))
-      (condition () (progn 
-			(usocket:socket-close socket)
-			(setf *sockets* (remove  socket *sockets* :test #'eq)))))))
+	(progn
+	  (format stream "~a~%" (reverse (read-line stream)))
+	  (force-output stream))
+      (condition () 
+	(progn
+	  (format t "Connection ~a from ~a:~a closed~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket)) 
+	  (setf *sockets* (remove socket *sockets* :test #'eq))
+	  (usocket:socket-close socket))))))
 
 (defun clean-resources ()
+  "Just for debugging, close all the sockets and init global variables to nil"
   (mapcar #'usocket:socket-close *sockets*) 
   (usocket:socket-close *master-socket*)
-  (setf  *sockets* '()))
+  (setf  *sockets* '()
+	 *master-socket* nil))
 
 ; (clean-resources)
 
