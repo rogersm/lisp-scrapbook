@@ -1,24 +1,85 @@
 (quicklisp:quickload "usocket")
+(quicklisp:quickload "trivial-utf-8")
 (load "/Users/rogersm/dev/lisp-scrapbook/mp.lisp")
 
 (defvar *master-socket* nil) ;; main socket listener
 (defvar *sockets* '())       ;; all sockets used by the tcp server, including *master-socket*
-(defvar *socket-to-client*  (make-hash-table))
+(defvar *connections*  (make-hash-table))
 
-(defclass tcp-client
-    ((buffer 
+(defclass client ()
+    ((socket :accessor client-socket 
+	     :initarg :socket)
+     (buffer :initform (make-array 64 :element-type 'unsigned-byte :adjustable t :fill-pointer t)
+	     :accessor client-buffer)
+     (waiting :initform nil
+	      :accessor waitingp)))
 
-      ((buffer-len
+(defmethod print-object ((object client) stream)
+  (print-unreadable-object (object stream :type t)
+    (with-slots (socket buffer waiting) object
+      (format stream "~a :socket ~a :buffer ~a :waiting" socket buffer waiting))))
 
-	((waiting-status
+(defun collect-input (socket buffer &optional (end-char 13))
+  (loop :with stream = (usocket:socket-stream socket)
+     :with byte
+     :while (listen stream)
+     :doing
+     (setq byte (read-byte stream))
+     (when (= byte end-char)
+       (return t))
+     (vector-push-extend byte buffer)))
 
+(defmethod client-read ((c client))
+    (when (collect-input (client-socket c) (client-buffer c))
+      (prog1 
+	  (trivial-utf-8:utf-8-bytes-to-string (client-buffer c))
+	(setf (fill-pointer (client-buffer c)) 0)))) ; reset buffer to 0
+
+(defmacro awhen (cond &body body)
+  `(let ((it ,cond))
+     (when it
+       ,@body)))
+
+(defun handle-client-input (socket)
+  (let ((client (gethash socket *connections*)))
+    (awhen (client-read client)
+      (handler-case
+	  (send-text socket "~a~%" (reverse it))
+	(condition (c) 
+	  (progn
+	    (format t "Connection ~a from ~a:~a closed by condition ~a~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket) c) 
+	    (setf *sockets* (remove socket *sockets* :test #'eq))
+	    (remhash socket *connections*)
+	    (usocket:socket-close socket)))))))
+			       ;          (send-to-workers server (curry #'client-on-command client it)))))))
+
+(defun send-text (socket fmt &rest args)
+  (let* ((applied-text (apply #'format nil fmt args))
+	 (applied-text-utf-8 (trivial-utf-8:string-to-utf-8-bytes applied-text)))
+    (loop :with stream = (usocket:socket-stream socket)
+       :for octet :across applied-text-utf-8
+       :doing (write-byte octet stream)
+       :finally (progn (force-output stream)
+		       (if (null (listen stream))
+				  (make-condition 'eof :format-control "Remote closed connection"))))))
+   
+       
+(defun force-send-text (socket)
+  (declare (ignore socket))
+  t)
+	
+
+
+(defun curry (fun &rest args1)
+  (lambda (&rest args2)
+    (apply fun (append args1 args2))))
 
 (defun tcp-server (host port)
   "Create a listener at host:port and manage the new connections incoming 
 to *master-socket* as well as data reception from the remaining sockets"
   (setf *master-socket* (usocket:socket-listen host port
 					       :reuse-address t
-					       :element-type 'character)) ;; :element-type 'unsigned-byte
+					       :element-type 'unsigned-byte)) ;; :element-type 'unsigned-byte
   (setf *sockets* (list *master-socket*))
   (format t "Ready to serve at ~a:~a~%" host port)
   (loop
@@ -32,24 +93,25 @@ to *master-socket* as well as data reception from the remaining sockets"
 	      (handle-client-input socket)))))
 
 (defun handle-client-connection (socket)
-  "Log the reception of a new client"
+  "Add the socket to *the connections*"
+  (setf (gethash socket *connections*) (make-instance 'client :socket socket))
   (format t "Accepted incoming connection ~a from ~a:~a~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket)))
-
+#|
 (defun handle-client-input (socket)
   "Read data from incoming socket and return it reversed. If the connection is unwrittable
 close socket and remove socket from *sockets*"
   (let ((stream (usocket:socket-stream socket)))
     (handler-case
-	(read-and-reverse (stream))	  
+	(read-and-reverse stream)
       (condition () 
 	(progn
 	  (format t "Connection ~a from ~a:~a closed~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket)) 
 	  (setf *sockets* (remove socket *sockets* :test #'eq))
+	  (remhash socket *connections*)
 	  (usocket:socket-close socket))))))
+|#
 
-(defun read-and-reverse (stream)
-  (format stream "~a~%" (reverse (read-line stream)))
-  (force-output stream))
+
 
 
 (defun clean-resources ()
