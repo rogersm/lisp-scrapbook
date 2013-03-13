@@ -4,7 +4,7 @@
 (defvar *sockets* '())       ;; all sockets used by the tcp server, including *master-socket*
 
 (defun tcp-server (host port)
-  "Create a listener at host:port and manage the new connections incoming 
+  "Create a listener at host:port and manage the new connections incoming
 to *master-socket* as well as data reception from the remaining sockets"
   (setf *master-socket* (usocket:socket-listen host port
 					       :reuse-address t
@@ -33,15 +33,15 @@ close socket and remove socket from *sockets*"
 	(progn
 	  (format stream "~a~%" (reverse (read-line stream)))
 	  (force-output stream))
-      (condition () 
+      (condition (c)
 	(progn
-	  (format t "Connection ~a from ~a:~a closed~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket)) 
+	  (format t "Connection ~a from ~a:~a closed by condition ~a~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket) c)
 	  (setf *sockets* (remove socket *sockets* :test #'eq))
 	  (usocket:socket-close socket))))))
 
 (defun clean-resources ()
   "Just for debugging, close all the sockets and init global variables to nil"
-  (mapcar #'usocket:socket-close *sockets*) 
+  (mapcar #'usocket:socket-close *sockets*)
   (usocket:socket-close *master-socket*)
   (setf  *sockets* '()
 	 *master-socket* nil))
@@ -49,4 +49,3 @@ close socket and remove socket from *sockets*"
 ; (clean-resources)
 
 (tcp-server "127.0.0.1" 8081)
-       
