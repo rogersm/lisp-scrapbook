@@ -24,7 +24,7 @@
      :with byte
      :while (listen stream)
      :doing
-     (setq byte (read-byte stream))
+     (setf byte (read-byte stream))
      (when (= byte end-char)
        (return t))
      (vector-push-extend byte buffer)))
@@ -42,15 +42,15 @@
 
 (defun handle-client-input (socket)
   (let ((client (gethash socket *connections*)))
-    (awhen (client-read client)
-      (handler-case
-	  (send-text socket "~a~%" (reverse it))
+    (handler-case
+	(awhen (client-read client)
+	       (send-text socket "~a~%" (reverse it)))
 	(condition (c)
 	  (progn
 	    (format t "Connection ~a from ~a:~a closed by condition ~a~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket) c)
 	    (setf *sockets* (remove socket *sockets* :test #'eq))
 	    (remhash socket *connections*)
-	    (usocket:socket-close socket)))))))
+	    (usocket:socket-close socket))))))
 					;          (send-to-workers server (curry #'client-on-command client it)))))))
 
 (defun send-text (socket fmt &rest args)
@@ -76,13 +76,21 @@ to *master-socket* as well as data reception from the remaining sockets"
   (format t "Ready to serve at ~a:~a~%" host port)
   (loop
        (loop :for socket :in (usocket:wait-for-input *sockets* :ready-only t) :do
-	  (if (eq socket *master-socket*)
-	      ;; the input is from *master-socket* => a new socket
+	   (handler-case
+	       (if (and (eq socket *master-socket*)
+			(not (null (slot-value socket 'usocket::state)))) ; may happen to wake up the server socket and have status null?
+		   ;; the input is from *master-socket* => a new socket
 	      (let ((new-socket (usocket:socket-accept socket)))
 		(setf *sockets* (nconc *sockets* `(,new-socket)))
 		(handle-client-connection new-socket))
 	      ;; else: data from an existing socket
-	      (handle-client-input socket)))))
+	      (if (listen (usocket:socket-stream socket))
+		  (handle-client-input socket)
+		  (progn
+		    (format t "Connection ~a from ~a:~a closed when listening to new socket~%" (usocket:get-peer-name socket) (usocket:get-peer-address socket) (usocket:get-peer-port socket))
+		    (setf *sockets* (remove socket *sockets* :test #'eq))
+		    (remhash socket *connections*)
+		    (usocket:socket-close socket))))))))
 
 (defun handle-client-connection (socket)
   "Add the socket to *the connections*"
